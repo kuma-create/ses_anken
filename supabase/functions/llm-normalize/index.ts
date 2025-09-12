@@ -21,7 +21,9 @@ const SYSTEM = `You are a strict information normalizer for Japanese job posting
 - 案件詳細: Put short 1-2 sentence "description".
 - 業務内容: Merge a concise overview into "detailedDescription" (<= 300 chars).
 - 募集背景: Into "recruitmentBackground".
-- 開発環境: Skill stack into "mustSkills"/"niceSkills" appropriately.
+- 開発環境: Copy concise original block into "environmentText". Do NOT add to mustSkills/niceSkills.
+- 必須条件/応募要件: Copy concise original bullet block into mustSkillsText (multiline OK).
+- 歓迎/尚可/尚良: Copy concise original bullet block into niceSkillsText (multiline OK).
 - NG条件: Do NOT copy verbatim unless clearly relevant; otherwise omit.
 
 ## Languages & Years
@@ -138,20 +140,148 @@ function clean2(s?: string | null) {
     .trim();
   return v.length ? v : undefined;
 }
+
+// Normalize whitespace per line, preserving line breaks and removing empty lines.
+function normalizeLinesKeepBreaks(s?: string | null) {
+  if (!s) return undefined;
+  const v = toHalfWidth2(s)
+    .replace(/\r/g, "")
+    .split(/\n+/)
+    .map((ln) => ln.replace(/^\s+|\s+$/g, ""))
+    .filter((ln) => ln.length > 0)
+    .join("\n")
+    .trim();
+  return v.length ? v : undefined;
+}
 function uniqStr(arr: (string|undefined)[]) {
   return Array.from(new Set(arr.filter(Boolean) as string[]));
 }
-const LANG_CANON: Record<string,string> = {
-  'react':'React','vue':'Vue','go':'Go','java':'Java','kotlin':'Kotlin','scala':'Scala','c#':'C#','csharp':'C#','typescript':'TypeScript','rust':'Rust',
-  'graphql':'GraphQL','google cloud':'Google Cloud','gcp':'Google Cloud','terraform':'Terraform'
+// Canonical tech keyword map (broad support + synonyms)
+const LANG_CANON: Record<string, string> = {
+  // Programming languages
+  'js': 'JavaScript', 'javascript': 'JavaScript',
+  'ts': 'TypeScript', 'typescript': 'TypeScript', 'タイプスクリプト': 'TypeScript',
+  'java': 'Java', 'ジャバ': 'Java',
+  'kotlin': 'Kotlin',
+  'swift': 'Swift',
+  'objective-c': 'Objective-C', 'objc': 'Objective-C', 'objective c': 'Objective-C',
+  'c': 'C',
+  'c++': 'C++', 'cpp': 'C++',
+  'c#': 'C#', 'csharp': 'C#',
+  'go': 'Go', 'golang': 'Go',
+  'rust': 'Rust',
+  'ruby': 'Ruby',
+  'python': 'Python',
+  'php': 'PHP',
+  'scala': 'Scala',
+  'r': 'R',
+  'dart': 'Dart',
+  'elixir': 'Elixir',
+  'perl': 'Perl',
+  'haskell': 'Haskell',
+  'sql': 'SQL',
+  'bash': 'Bash', 'shell': 'Bash', 'シェル': 'Bash',
+
+  // Frontend frameworks & libs
+  'react': 'React', 'reactjs': 'React', 'react.js': 'React',
+  'vue': 'Vue', 'vuejs': 'Vue', 'vue.js': 'Vue',
+  'angular': 'Angular', 'angularjs': 'Angular',
+  'svelte': 'Svelte',
+  'next': 'Next.js', 'nextjs': 'Next.js', 'next.js': 'Next.js',
+  'nuxt': 'Nuxt.js', 'nuxtjs': 'Nuxt.js', 'nuxt.js': 'Nuxt.js',
+  'jquery': 'jQuery', 'jquery.js': 'jQuery',
+
+  // Backend & web frameworks
+  'node': 'Node.js', 'nodejs': 'Node.js', 'node.js': 'Node.js',
+  'express': 'Express',
+  'nest': 'NestJS', 'nestjs': 'NestJS', 'nest.js': 'NestJS',
+  'spring': 'Spring', 'springboot': 'Spring Boot', 'spring boot': 'Spring Boot',
+  'rails': 'Ruby on Rails', 'ruby on rails': 'Ruby on Rails',
+  'laravel': 'Laravel',
+  'django': 'Django',
+  'flask': 'Flask',
+  'fastapi': 'FastAPI',
+  'asp.net': 'ASP.NET', 'aspnet': 'ASP.NET',
+  'grpc': 'gRPC',
+  'graphql': 'GraphQL',
+  'rest': 'REST',
+
+  // Mobile / cross-platform
+  'android': 'Android',
+  'ios': 'iOS',
+  'swiftui': 'SwiftUI',
+  'react native': 'React Native',
+  'flutter': 'Flutter',
+
+  // Databases & caches
+  'postgres': 'PostgreSQL', 'postgresql': 'PostgreSQL',
+  'mysql': 'MySQL',
+  'sqlite': 'SQLite',
+  'mariadb': 'MariaDB',
+  'mongodb': 'MongoDB',
+  'dynamodb': 'DynamoDB',
+  'redis': 'Redis',
+  'elasticsearch': 'Elasticsearch', 'opensearch': 'OpenSearch',
+
+  // Cloud & infra
+  'aws': 'AWS',
+  'gcp': 'Google Cloud', 'google cloud': 'Google Cloud',
+  'azure': 'Azure',
+  'docker': 'Docker',
+  'k8s': 'Kubernetes', 'kubernetes': 'Kubernetes',
+  'terraform': 'Terraform',
+  'ansible': 'Ansible',
+  'pulumi': 'Pulumi',
+  'helm': 'Helm',
+  'serverless': 'Serverless',
+
+  // Messaging / streaming
+  'kafka': 'Kafka',
+  'sqs': 'SQS', 'sns': 'SNS',
+  'pubsub': 'Pub/Sub',
+
+  // Tools & others
+  'git': 'Git',
+  'github actions': 'GitHub Actions',
+  'circleci': 'CircleCI',
+  'ga': 'Google Analytics',
+  'bigquery': 'BigQuery',
 };
+const VALID_CANON = new Set(Object.values(LANG_CANON));
+
 function canonLang(name: string) {
-  const k = name.toLowerCase().trim();
-  return LANG_CANON[k] || name.trim();
+  if (!name) return '';
+  const k = name
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[【】\[\]()（）]/g, '')
+    .replace(/^[•・\-◆●,*]+/, '')
+    .replace(/\.$/, '')
+    .trim();
+  return LANG_CANON[k] || '';
 }
+
+/**
+ * Split a free-form list and keep only known tech keywords.
+ * This prevents long Japanese sentences from being treated as skills,
+ * while supporting a wide variety of technologies and synonyms.
+ */
 function explodeLangList(s?: string) {
   if (!s) return [] as string[];
-  return s.split(/[、・,\/／\s]+/).map(x=>x.trim()).filter(Boolean).map(canonLang);
+  const parts = s
+    .replace(/\r/g, '')
+    // normalize separators: Japanese punctuation, commas, slashes, pipes, spaces
+    .split(/[、，・;；,/／\|\n\t ]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map(canonLang)
+    .filter(Boolean)
+    .filter((x) => VALID_CANON.has(x));
+  // unique & stable order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of parts) if (!seen.has(p)) { seen.add(p); out.push(p); }
+  return out;
 }
 /**
  * Extracts structured fields from a raw Japanese posting like the user's sample.
@@ -234,6 +364,27 @@ function extractFromJapanesePosting(raw?: string) {
   const loc = pick(/勤務地[：:]\s*([^\n]+)/i) || (/(フルリモート|完全在宅)/i.test(t) ? "フルリモート" : undefined);
   if (loc) out.location = loc;
 
+  // --- 開発環境（environmentText） ---
+  {
+    // 見出しの同義語を広くカバー
+    const heading = String.raw`(?:開発環境|使用技術|技術スタック|利用技術|使用ツール|環境|Tech\\s*Stack)`;
+    const next = String.raw`(?:必須(?:条件|スキル)?|応募要件|応募資格|求めるスキル|歓迎(?:スキル)?|尚可|尚良|NG条件|募集背景|業務内容(?:（詳細）?)?|案件詳細|使用言語|開発言語|開発体制|勤務地|勤務時間|商流|精算(?:幅)?|支払いサイト)`;
+    const envHeadingToNextRe = new RegExp(
+      String.raw`^\\s*(?:[【\$begin:math:display$]?\\\\s*)?${heading}(?:\\\\s*[】\\$end:math:display$]\\s*)?\\s*(?:[:：])?\\s*[\\r\\n]+([\\s\\S]*?)(?=^\\s*(?:[【\$begin:math:display$]?\\\\s*${next}\\\\s*[】\\$end:math:display$]?\\s*(?:[:：])?\\s*$)|\\Z)`,
+      "im"
+    );
+    const m = t.match(envHeadingToNextRe);
+    if (m) {
+      const filtered = (normalizeLinesKeepBreaks(m[1]) || "")
+        .split("\n")
+        // 見出し語だけの行は弾く
+        .filter((ln) => !/^(?:[-・●◆]?\\s*)?(?:必須(?:条件|スキル)?|応募要件|応募資格|求めるスキル|歓迎(?:スキル)?|尚可|尚良)\\s*(?:[:：])?\\s*$/.test(ln))
+        .join("\n")
+        .trim();
+      if (filtered) (out as any).environmentText = filtered;
+    }
+  }
+
   // --- languages and skills ---
   // 「下記いずれかのバックエンド開発経験」の列挙抽出
   const backends =
@@ -257,6 +408,36 @@ function extractFromJapanesePosting(raw?: string) {
   if (/Terraform/i.test(t)) niceSet.add("Terraform");
   out.niceSkills = Array.from(niceSet);
 
+  // --- 必須/歓迎テキスト原文の抽出（そのまま保存：改行保持） ---
+  const stripPlaceholders = (s?: string) => {
+    if (!s) return undefined;
+    const lines = (normalizeLinesKeepBreaks(s) || "")
+      .split("\n")
+      .map((ln) => ln.replace(/^\\s*[・•◆●\\-]\\s*/, "").trim())
+      // 入力促し・説明文などのプレースホルダは除去
+      .filter((ln) => !/(そのまま貼り付け|入力してください|記載してください|貼り付けて|ご入力|ペースト)/i.test(ln))
+      .filter((ln) => ln.length > 0);
+    const v = lines.join("\n").trim();
+    return v.length ? v : undefined;
+  };
+
+  // 見出しのバリエーションを広くカバー
+  const mustHead = String.raw`(?:必須(?:条件|スキル)?|応募要件|応募資格|求めるスキル|必須要件|必須経験)`;
+  const niceHead = String.raw`(?:歓迎(?:スキル)?|歓迎要件|尚可|尚良|あると尚可|あると望ましい)`;
+  const nextHead = String.raw`(?:${niceHead}|${mustHead}|NG条件|募集背景|業務内容(?:（詳細）?)?|案件詳細|開発環境|使用技術|技術スタック|使用言語|開発言語|勤務地|勤務時間|商流|精算(?:幅)?|支払いサイト|備考)`;
+
+  const mustRe = new RegExp(String.raw`^[ \\t]*?(?:[【\$begin:math:display$]?\\\\s*)?${mustHead}(?:\\\\s*[】\\$end:math:display$]\\s*)?\\s*(?:[:：])?\\s*[\\r\\n]+([\\s\\S]*?)(?=^\\s*(?:[【\$begin:math:display$]?\\\\s*${nextHead}\\\\s*[】\\$end:math:display$]?\\s*(?:[:：])?\\s*$)|\\Z)`, "im");
+  const niceRe = new RegExp(String.raw`^[ \\t]*?(?:[【\$begin:math:display$]?\\\\s*)?${niceHead}(?:\\\\s*[】\\$end:math:display$]\\s*)?\\s*(?:[:：])?\\s*[\\r\\n]+([\\s\\S]*?)(?=^\\s*(?:[【\$begin:math:display$]?\\\\s*${nextHead}\\\\s*[】\\$end:math:display$]?\\s*(?:[:：])?\\s*$)|\\Z)`, "im");
+
+  const mustBlock = t.match(mustRe)?.[1];
+  const niceBlockTxt = t.match(niceRe)?.[1];
+
+  const mustNorm = stripPlaceholders(mustBlock);
+  if (mustNorm) out.mustSkillsText = mustNorm;
+
+  const niceNorm = stripPlaceholders(niceBlockTxt);
+  if (niceNorm) out.niceSkillsText = niceNorm;
+
   // 言語年数: 全体の「（2年以上）」があれば必須言語に適用
   const yearsGlobal = /（\s*([0-9]+(?:\.[0-9]+)?)\s*年以上?\s*）/.exec(t)?.[1];
   const yrs = yearsGlobal ? `${yearsGlobal}年以上` : "2年以上";
@@ -268,18 +449,34 @@ function extractFromJapanesePosting(raw?: string) {
   if (Object.keys(langYears).length) (out as any).languageYears = langYears;
 
   // description / detailed
-  const descSource = pick(/業務内容[：:]\s*([\s\S]*?)(?:\n【|$)/i) || pick(/業務内容：\s*([\s\S]*)/i);
-  const descShort = descSource ? compactDescription(descSource) : undefined;
-  if (descShort) out.description = descShort;
-  if (descSource) out.detailedDescription = descSource;
+  {
+    const descHead = String.raw`(?:業務内容(?:（詳細）?)?|仕事内容|職務内容|業務概要|職務概要|案件詳細)`;
+    const next = String.raw`(?:募集背景|開発環境|使用技術|技術スタック|${mustHead}|${niceHead}|NG条件|勤務地|勤務時間|商流|精算(?:幅)?|支払いサイト|応募方法|備考)`;
+    const descRe = new RegExp(String.raw`^[ \\t]*?(?:[【\$begin:math:display$]?\\\\s*)?${descHead}(?:\\\\s*[】\\$end:math:display$]\\s*)?\\s*(?:[:：])?\\s*[\\r\\n]+([\\s\\S]*?)(?=^\\s*(?:[【\$begin:math:display$]?\\\\s*${next}\\\\s*[】\\$end:math:display$]?\\s*(?:[:：])?\\s*$)|\\Z)`, "im");
+    const m = t.match(descRe)?.[1];
+    if (m) {
+      const detailed = normalizeLinesKeepBreaks(m);
+      if (detailed) out.detailedDescription = detailed;
+      const short = compactDescription(detailed || undefined);
+      if (short) out.description = short;
+    }
+  }
 
   // recruitment background
-  const bg = pick(/募集背景[：:]\s*([\s\S]*?)(?:\n【|$)/i);
-  if (bg) out.recruitmentBackground = bg;
+  {
+    const bgRe = /^(?:\\s*(?:[【\\[]?\\s*)?(?:募集背景|背景|ポジション背景)(?:\\s*[】\\]]\\s*)?\\s*(?:[:：])?\\s*[\\r\\n]+)([\\s\\S]*?)(?=^\\s*(?:[【\\[]?\\s*(?:${mustHead}|${niceHead}|NG条件|開発環境|使用技術|技術スタック|業務内容|案件詳細|勤務地|勤務時間)\\s*[】\\]]?\\s*(?:[:：])?\\s*$)|\\Z)/im;
+    const m = t.match(bgRe)?.[1];
+    const bg = normalizeLinesKeepBreaks(m || "");
+    if (bg) out.recruitmentBackground = bg;
+  }
 
-  // NG条件
-  const ng = pick(/NG条件[：:]\s*([\s\S]*?)(?:\n{2,}|$)/i);
-  if (ng) out.ngConditions = ng;
+  // NG条件（見出し～次見出しまで）
+  {
+    const ngRe = /^(?:\\s*(?:[【\\[]?\\s*)?NG条件(?:\\s*[】\\]]\\s*)?\\s*(?:[:：])?\\s*[\\r\\n]+)([\\s\\S]*?)(?=^\\s*(?:[【\\[]?\\s*(?:${mustHead}|${niceHead}|募集背景|業務内容|案件詳細|開発環境|使用技術|技術スタック|勤務地|勤務時間)\\s*[】\\]]?\\s*(?:[:：])?\\s*$)|\\Z)/im;
+    const m = t.match(ngRe)?.[1];
+    const ng = stripPlaceholders(m || "");
+    if (ng) (out as any).ngConditions = ng;
+  }
 
   return out;
 }
@@ -333,6 +530,10 @@ serve(async (req: Request) => {
           recruitmentBackground: { type: "string" },
           mustSkills: { type: "array", items: { type: "string" } },
           niceSkills: { type: "array", items: { type: "string" } },
+          mustSkillsText: { type: "string" },
+          niceSkillsText: { type: "string" },
+          environmentText: { type: "string" },
+          ngConditions: { type: "string" },
           budgetMin: { type: ["string","number"] },
           budgetMax: { type: ["string","number"] },
           workStyle: { type: "string", enum: ["remote","onsite","hybrid"] },
@@ -366,6 +567,11 @@ serve(async (req: Request) => {
       if (isObject(result.languageYears)) {
         (result as any).languageYearsText = Object.entries(result.languageYears as Record<string,string>)
           .map(([k,v]) => `${k} ${v}`).join(", ");
+      }
+       // 追加: 日本語求人ヒューリスティクスの取り込み（mustSkillsText / niceSkillsText を含む）
+      const fromJa = extractFromJapanesePosting(rawText);
+      if (Object.keys(fromJa).length) {
+        Object.assign(result, mergeMissing(result, fromJa as Record<string, unknown>));
       }
       return new Response(JSON.stringify(result), {
         headers: { "Content-Type": "application/json", ...corsHeaders },
@@ -438,6 +644,37 @@ serve(async (req: Request) => {
     if (isObject((merged as any).languageYears) && !(merged as any).languageYearsText) {
       (merged as any).languageYearsText = Object.entries((merged as any).languageYears as Record<string,string>)
         .map(([k,v]) => `${k} ${v}`).join(", ");
+    }
+
+    // ---- Frontend compatibility aliases ---------------------------------
+    // Duplicate certain fields under legacy keys so existing UI bindings populate.
+    const mAny = merged as any;
+
+    // 開発環境: environmentText -> environment
+    if (mAny.environmentText && !mAny.environment) {
+      mAny.environment = mAny.environmentText;
+    }
+    // ProjectForm expects developmentEnvironment
+    if (mAny.environmentText && !mAny.developmentEnvironment) {
+      mAny.developmentEnvironment = mAny.environmentText;
+    }
+
+    // 必須条件テキスト: mustSkillsText -> mustSkillsRaw
+    if (mAny.mustSkillsText && !mAny.mustSkillsRaw) {
+      mAny.mustSkillsRaw = mAny.mustSkillsText;
+    }
+
+    // 歓迎/尚可テキスト: niceSkillsText -> niceSkillsRaw
+    if (mAny.niceSkillsText && !mAny.niceSkillsRaw) {
+      mAny.niceSkillsRaw = mAny.niceSkillsText;
+    }
+
+// NG条件: keep both aliases in sync
+    if (mAny.ngConditions && !mAny.ngConditionsText) {
+      mAny.ngConditionsText = mAny.ngConditions;
+    }
+    if (mAny.ngConditionsText && !mAny.ngConditions) {
+      mAny.ngConditions = mAny.ngConditionsText;
     }
 
     return new Response(JSON.stringify(merged), {
