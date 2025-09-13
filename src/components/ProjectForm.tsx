@@ -446,8 +446,7 @@ export function ProjectForm({ projectId }: ProjectFormProps) {
     paymentTerms: '',
     ageLimit: '',
     foreignerAcceptable: '',
-    ngConditions: '',
-    developmentEnvironment: ''
+    ngConditions: ''
   })
 
   const [skillInput, setSkillInput] = useState('')
@@ -461,6 +460,20 @@ export function ProjectForm({ projectId }: ProjectFormProps) {
 
   // 表示整形: 精算幅 "140h〜180h" へ正規化
 
+  // --- yearsObjToList: Convert { "Java": "3年", ... } to "Java 3年, ..." ---
+  function yearsObjToList(obj?: Record<string, string> | string) {
+    if (!obj) return '';
+    if (typeof obj === 'string') return obj;
+    try {
+      const kv = Object.entries(obj)
+        .filter(([k, v]) => k && typeof v === 'string' && v.trim().length > 0)
+        .map(([k, v]) => `${k} ${v.trim()}`);
+      return kv.join(', ');
+    } catch {
+      return '';
+    }
+  }
+
   // --- AI正規化データ反映ユーティリティ（コンポーネント内に移動） ---
 const applyAiNormalizedData = (data: any) => {
   try {
@@ -468,6 +481,44 @@ const applyAiNormalizedData = (data: any) => {
       data && typeof data === "object"
         ? Object.fromEntries(Object.entries(data).filter(([, v]) => v !== ""))
         : {};
+
+    // ---- alias normalization from Edge Function ----
+    // fill canonical keys from aliases produced server-side
+    const dn: any = { ...d };
+
+    // attendance / interviews
+    if (dn.attendance == null && dn.attendanceFrequency != null) dn.attendance = dn.attendanceFrequency;
+    if (dn.attendanceFrequency == null && dn.attendance != null) dn.attendanceFrequency = dn.attendance;
+
+    if (dn.interviews != null && dn.interviewCount == null) dn.interviewCount = dn.interviews;
+    if (dn.interviewCount != null && dn.interviews == null) dn.interviews = dn.interviewCount;
+
+    // payment terms / days
+    if (dn.paymentTerms == null && dn.paymentSiteDays != null) dn.paymentTerms = String(dn.paymentSiteDays);
+
+    // settlement / payment range
+    if (dn.paymentRange == null && dn.settlementRange != null) dn.paymentRange = dn.settlementRange;
+    if (typeof dn.paymentRange === 'string') {
+      dn.paymentRange = dn.paymentRange.replace(/\s*-\s*/g, '〜').replace(/\s*~\s*/g, '〜');
+    }
+
+    // commerce
+    if (dn.commerceTier == null && dn.commerce != null) dn.commerceTier = dn.commerce;
+    if (dn.commerceLimit == null && dn.commerceLimitText != null) dn.commerceLimit = dn.commerceLimitText;
+
+    // foreigner
+    if (dn.foreignerAcceptable == null && typeof dn.foreigner === 'string') {
+      dn.foreignerAcceptable = dn.foreigner === '可' ? true : dn.foreigner === '不可' ? false : dn.foreignerAcceptable;
+    }
+
+    // PC provision
+    if (dn.pcProvided == null && dn.pcLending != null) dn.pcProvided = dn.pcLending;
+    if (dn.pcProvided == null && dn.pcProvision != null) dn.pcProvided = dn.pcProvision;
+
+    // languageYears can be object; convert to "Java 3年, ..."
+    if (!dn.languageYearsText && dn.languageYears && typeof dn.languageYears === 'object') {
+      dn.languageYearsText = yearsObjToList(dn.languageYears as Record<string,string>);
+    }
 
     const workStyleMap: { [key: string]: WorkStyle } = {
       'リモート': 'remote',
@@ -494,63 +545,48 @@ const applyAiNormalizedData = (data: any) => {
     setFormData(prev => {
       const base = {
         ...prev,
-        title: d.title ?? prev.title,
-        description: d.description ?? prev.description,
-        detailedDescription: d.detailedDescription ?? prev.detailedDescription,
-        recruitmentBackground: d.recruitmentBackground ?? prev.recruitmentBackground,
-        mustSkills: Array.isArray(d.mustSkills) && d.mustSkills.length
-          ? [...new Set([...(prev.mustSkills ?? []), ...d.mustSkills])]
+        title: dn.title ?? prev.title,
+        description: dn.description ?? prev.description,
+        detailedDescription: dn.detailedDescription ?? prev.detailedDescription,
+        recruitmentBackground: dn.recruitmentBackground ?? prev.recruitmentBackground,
+        mustSkills: Array.isArray(dn.mustSkills) && dn.mustSkills.length
+          ? [...new Set([...(prev.mustSkills ?? []), ...dn.mustSkills])]
           : prev.mustSkills,
-        niceSkills: Array.isArray(d.niceSkills) && d.niceSkills.length
-          ? [...new Set([...(prev.niceSkills ?? []), ...d.niceSkills])]
+        niceSkills: Array.isArray(dn.niceSkills) && dn.niceSkills.length
+          ? [...new Set([...(prev.niceSkills ?? []), ...dn.niceSkills])]
           : prev.niceSkills,
-        mustSkillsText: d.mustSkillsText ?? prev.mustSkillsText,
-        niceSkillsText: d.niceSkillsText ?? prev.niceSkillsText,
-        budgetMin: (d.budgetMin != null) ? String(d.budgetMin) : prev.budgetMin,
-        budgetMax: (d.budgetMax != null) ? String(d.budgetMax) : prev.budgetMax,
-        workStyle: d.workStyle ? mapWorkStyle(d.workStyle, prev) : prev.workStyle,
-        startDate: d.startDate
+        mustSkillsText: (dn.mustSkillsText ?? dn.mustSkillsRaw) ?? prev.mustSkillsText,
+        niceSkillsText: (dn.niceSkillsText ?? dn.niceSkillsRaw) ?? prev.niceSkillsText,
+        budgetMin: (dn.budgetMin != null) ? String(dn.budgetMin) : prev.budgetMin,
+        budgetMax: (dn.budgetMax != null) ? String(dn.budgetMax) : prev.budgetMax,
+        workStyle: dn.workStyle ? mapWorkStyle(dn.workStyle, prev) : prev.workStyle,
+        startDate: dn.startDate
           ? (() => {
-              const date = new Date(d.startDate);
+              const date = new Date(dn.startDate);
               return isNaN(date.getTime()) ? prev.startDate : date;
             })()
           : prev.startDate,
-        language: d.language ?? prev.language,
-        languageYears: d.languageYearsText ?? d.languageYears ?? prev.languageYears,
+        language: dn.language ?? prev.language,
+        languageYears: dn.languageYearsText ?? yearsObjToList(dn.languageYears) ?? prev.languageYears,
         languages:
-          (d.languageYearsText || d.languageYears)
-            ? pairsFromYearsList(normalizeYearsList(d.languageYearsText || d.languageYears))
+          (dn.languageYearsText || dn.languageYears)
+            ? pairsFromYearsList(normalizeYearsList(dn.languageYearsText || yearsObjToList(dn.languageYears)))
             : (prev.languages && prev.languages.length
                 ? prev.languages
-                : pairsFromYearsList(normalizeYearsList(prev.languageYears || d.language || prev.language || ""))),
-        commerceTier: d.commerceTier ?? prev.commerceTier,
-        commerceLimit: d.commerceLimit ?? prev.commerceLimit,
-        location: d.location ? trimLeadingLabel(d.location) : prev.location,
-        workingHours: d.workingHours ? trimLeadingLabel(d.workingHours) : prev.workingHours,
-        workingDays: d.workingDays ?? prev.workingDays,
-        attendanceFrequency: d.attendanceFrequency ? trimLeadingLabel(d.attendanceFrequency) : prev.attendanceFrequency,
-        interviewCount: (d.interviewCount != null) ? String(d.interviewCount) : prev.interviewCount,
-        paymentRange: d.paymentRange ?? prev.paymentRange,
-        pcProvided: (d.pcProvided != null) ? String(d.pcProvided) : prev.pcProvided,
-        paymentTerms: d.paymentTerms ?? prev.paymentTerms,
-        ageLimit: (d.ageLimit != null) ? String(d.ageLimit) : prev.ageLimit,
-        foreignerAcceptable: (d.foreignerAcceptable != null) ? String(d.foreignerAcceptable) : prev.foreignerAcceptable,
-        ngConditions: d.ngConditions ?? prev.ngConditions,
-        developmentEnvironment:
-          (d.developmentEnvironment && String(d.developmentEnvironment).trim() !== "")
-            ? d.developmentEnvironment
-            : (() => {
-                const mustTxt = (d as any).mustSkillsText as string | undefined;
-                const niceTxt = (d as any).niceSkillsText as string | undefined;
-                if ((prev.developmentEnvironment && String(prev.developmentEnvironment).trim() !== "") || (!mustTxt && !niceTxt)) {
-                  return prev.developmentEnvironment;
-                }
-                const lines = [
-                  mustTxt ? `必須: ${mustTxt}` : "",
-                  niceTxt ? `歓迎: ${niceTxt}` : ""
-                ].filter(Boolean);
-                return lines.length ? lines.join("\n") : prev.developmentEnvironment;
-              })()
+                : pairsFromYearsList(normalizeYearsList(prev.languageYears || dn.language || prev.language || ""))),
+        commerceTier: dn.commerceTier ?? prev.commerceTier,
+        commerceLimit: dn.commerceLimit ?? prev.commerceLimit,
+        location: dn.location ? trimLeadingLabel(dn.location) : prev.location,
+        workingHours: dn.workingHours ? trimLeadingLabel(dn.workingHours) : prev.workingHours,
+        workingDays: dn.workingDays ?? prev.workingDays,
+        attendanceFrequency: dn.attendanceFrequency ? trimLeadingLabel(dn.attendanceFrequency) : dn.attendance || prev.attendanceFrequency,
+        interviewCount: (dn.interviewCount != null) ? String(dn.interviewCount) : prev.interviewCount,
+        paymentRange: dn.paymentRange ?? prev.paymentRange,
+        pcProvided: (dn.pcProvided != null) ? String(dn.pcProvided) : prev.pcProvided,
+        paymentTerms: dn.paymentTerms ?? prev.paymentTerms,
+        ageLimit: (dn.ageLimit != null) ? String(dn.ageLimit) : prev.ageLimit,
+        foreignerAcceptable: (dn.foreignerAcceptable != null) ? String(dn.foreignerAcceptable) : prev.foreignerAcceptable,
+        ngConditions: (dn.ngConditions ?? dn.ngConditionsText) ?? prev.ngConditions
       } as typeof prev;
 
       if (!base.language && base.languageYears) {
@@ -561,7 +597,7 @@ const applyAiNormalizedData = (data: any) => {
           .trim();
       }
 
-      return aiAutofill ? mergeEmptyWithConfidence(base, d) : base;
+      return aiAutofill ? mergeEmptyWithConfidence(base, dn) : base;
     });
   } catch (e) {
     console.error('AI正規化データの反映でエラー:', e);
@@ -638,6 +674,27 @@ async function normalizeWithLLM(parsedData: any) {
   function mergeEmptyWithConfidence(prev: typeof formData, ai: any) {
     const c: Record<string, number> = ai?._confidence || {};
     const th = 0.6;
+    // fold aliases for confidence-based merging
+    const aliasFold: any = { ...ai };
+    if (aliasFold.attendance == null && aliasFold.attendanceFrequency != null) aliasFold.attendance = aliasFold.attendanceFrequency;
+    if (aliasFold.attendanceFrequency == null && aliasFold.attendance != null) aliasFold.attendanceFrequency = aliasFold.attendance;
+    if (aliasFold.interviewCount == null && aliasFold.interviews != null) aliasFold.interviewCount = aliasFold.interviews;
+    if (aliasFold.paymentRange == null && aliasFold.settlementRange != null) aliasFold.paymentRange = aliasFold.settlementRange;
+    if (aliasFold.paymentTerms == null && aliasFold.paymentSiteDays != null) aliasFold.paymentTerms = String(aliasFold.paymentSiteDays);
+    if (aliasFold.commerceTier == null && aliasFold.commerce != null) aliasFold.commerceTier = aliasFold.commerce;
+    if (aliasFold.commerceLimit == null && aliasFold.commerceLimitText != null) aliasFold.commerceLimit = aliasFold.commerceLimitText;
+    if (aliasFold.foreignerAcceptable == null && typeof aliasFold.foreigner === 'string') {
+      aliasFold.foreignerAcceptable = aliasFold.foreigner === '可' ? true : aliasFold.foreigner === '不可' ? false : aliasFold.foreignerAcceptable;
+    }
+    if (aliasFold.mustSkillsText == null && aliasFold.mustSkillsRaw != null) aliasFold.mustSkillsText = aliasFold.mustSkillsRaw;
+    if (aliasFold.niceSkillsText == null && aliasFold.niceSkillsRaw != null) aliasFold.niceSkillsText = aliasFold.niceSkillsRaw;
+    if (aliasFold.ngConditions == null && aliasFold.ngConditionsText != null) aliasFold.ngConditions = aliasFold.ngConditionsText;
+    if (aliasFold.pcProvided == null && aliasFold.pcLending != null) aliasFold.pcProvided = aliasFold.pcLending;
+    if (aliasFold.pcProvided == null && aliasFold.pcProvision != null) aliasFold.pcProvided = aliasFold.pcProvision;
+    if (!aliasFold.languageYearsText && aliasFold.languageYears && typeof aliasFold.languageYears === 'object') {
+      aliasFold.languageYearsText = yearsObjToList(aliasFold.languageYears as Record<string,string>);
+    }
+    ai = aliasFold;
     const take = (k: keyof typeof formData, v: any) => {
       if (v == null) return prev[k];
       const conf = typeof c[k as string] === 'number' ? c[k as string] : 1;
@@ -661,7 +718,7 @@ async function normalizeWithLLM(parsedData: any) {
       workStyle: take('workStyle', ai.workStyle),
       startDate: prev.startDate, // 日付は上書きしない
       language: take('language', ai.language),
-      languageYears: take('languageYears', ai.languageYears),
+      languageYears: take('languageYears', ai.languageYearsText || ai.languageYears),
       commerceTier: take('commerceTier', ai.commerceTier),
       commerceLimit: take('commerceLimit', ai.commerceLimit),
       location: take('location', ai.location),
@@ -674,8 +731,7 @@ async function normalizeWithLLM(parsedData: any) {
       paymentTerms: take('paymentTerms', ai.paymentTerms),
       ageLimit: take('ageLimit', ai.ageLimit != null ? String(ai.ageLimit) : undefined),
       foreignerAcceptable: take('foreignerAcceptable', ai.foreignerAcceptable != null ? String(ai.foreignerAcceptable) : undefined),
-      ngConditions: take('ngConditions', ai.ngConditions),
-      developmentEnvironment: take('developmentEnvironment', ai.developmentEnvironment),
+      ngConditions: take('ngConditions', ai.ngConditions)
     } as typeof formData;
   }
 
@@ -732,8 +788,7 @@ async function normalizeWithLLM(parsedData: any) {
         paymentTerms: existingProject.paymentTerms || '',
         ageLimit: existingProject.ageLimit != null ? String(existingProject.ageLimit) : '',
         foreignerAcceptable: existingProject.foreignerAcceptable === true ? 'true' : existingProject.foreignerAcceptable === false ? 'false' : '',
-        ngConditions: existingProject.ngConditions || '',
-        developmentEnvironment: existingProject.developmentEnvironment || ''
+        ngConditions: existingProject.ngConditions || ''
       })
     }
   }, [existingProject])
@@ -941,11 +996,14 @@ async function normalizeWithLLM(parsedData: any) {
     const languageYears = clean(explicitLanguage) || clean(langFromEnv) || clean(langFromWhole);
     const language = languageYears
       ? languageYears
-          .replace(/\\s*\\d+(?:\\.\\d+)?\\s*年(?:以上)?/g, '')
-          .replace(/\\s{2,}/g, ' ')
-          .replace(/\\s*,\\s*,/g, ',')
-          .replace(/,\\s*,/g, ',')
-          .replace(/\\s+,/g, ', ')
+          // remove years like "3年", "2.5年", "3年以上"
+          .replace(/\s*\d+(?:\.\d+)?\s*年(?:以上)?/g, '')
+          // collapse multiple spaces
+          .replace(/\s{2,}/g, ' ')
+          // fix duplicate commas and spacing
+          .replace(/\s*,\s*,/g, ',')
+          .replace(/,\s*,/g, ',')
+          .replace(/\s+,/g, ', ')
           .trim()
       : undefined;
 
@@ -1580,17 +1638,6 @@ async function normalizeWithLLM(parsedData: any) {
                   value={formData.recruitmentBackground}
                   onChange={(e) => setFormData(prev => ({ ...prev, recruitmentBackground: e.target.value }))}
                   placeholder="新規プロダクト開発のため、チーム強化のため等"
-                  rows={3}
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="developmentEnvironment">開発環境</Label>
-                <Textarea
-                  id="developmentEnvironment"
-                  value={formData.developmentEnvironment}
-                  onChange={(e) => setFormData(prev => ({ ...prev, developmentEnvironment: e.target.value }))}
-                  placeholder="使用技術、ツール、環境等の詳細"
                   rows={3}
                 />
               </div>

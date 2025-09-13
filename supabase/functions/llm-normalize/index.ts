@@ -17,11 +17,10 @@ const SYSTEM = `You are a strict information normalizer for Japanese job posting
 - For "workStyle", only use one of: "remote" | "onsite" | "hybrid".
 - Use short bullet-like phrases; avoid polite filler.
 
-## Sections to extract (when present)
 - 案件詳細: Put short 1-2 sentence "description".
 - 業務内容: Merge a concise overview into "detailedDescription" (<= 300 chars).
 - 募集背景: Into "recruitmentBackground".
-- 開発環境: Copy concise original block into "environmentText". Do NOT add to mustSkills/niceSkills.
+- 開発環境: Do NOT auto-fill. Leave unset unless explicitly provided in input "data.environmentText".
 - 必須条件/応募要件: Copy concise original bullet block into mustSkillsText (multiline OK).
 - 歓迎/尚可/尚良: Copy concise original bullet block into niceSkillsText (multiline OK).
 - NG条件: Do NOT copy verbatim unless clearly relevant; otherwise omit.
@@ -259,6 +258,39 @@ const LANG_CANON: Record<string, string> = {
 };
 const VALID_CANON = new Set(Object.values(LANG_CANON));
 
+// Utility: Judge if a block contains tech keywords (for environmentText, etc)
+function hasTechKeywords(s?: string) {
+  if (!s) return false;
+  const t = s.toLowerCase();
+  return /(react|vue|angular|next|nuxt|node|go\b|java\b|kotlin|swift|python|ruby|php|scala|rust|graphql|docker|kubernetes|terraform|gcp|google\s*cloud|aws|azure|mysql|postgres|mongodb|redis|kafka|git|ci|cd)/.test(t);
+}
+
+function hasTechLine(ln?: string) {
+  if (!ln) return false;
+  const t = ln.toLowerCase();
+  return /(react|vue|angular|next|nuxt|node|go\b|java\b|kotlin|swift|python|ruby|php|scala|rust|graphql|docker|kubernetes|terraform|gcp|google\s*cloud|aws|azure|mysql|postgres|mongodb|redis|kafka|git|ci|cd|fastapi|django|flask|rails|laravel|spring|nest|express|typescript|javascript)/.test(t);
+}
+/** 技術・ツール名らしい行だけを残す（スクラム経験/リーダー経験などは除外） */
+function filterTechBlock(block?: string) {
+  if (!block) return undefined;
+  const lines = (normalizeLinesKeepBreaks(block) || "").split("\n");
+  const kept = lines
+    .map((ln) => ln.replace(/^[・•◆●\-\s]+/, "").trim())
+    .filter((ln) => ln.length > 0)
+    .filter((ln) => hasTechLine(ln) || /[,／\/・]|スタック|言語|DB|データベース|クラウド|ツール/i.test(ln));
+  const v = kept.join("\n").trim();
+  return v.length ? v : undefined;
+}
+
+// Utility: Remove heading lines like "必須条件:" etc from a block
+function stripHeadingLines(s?: string) {
+  if (!s) return undefined;
+  const lines = (normalizeLinesKeepBreaks(s) || "").split("\n");
+  const badHead = /^(?:[-・●◆]?\s*)?(?:必須(?:条件|要件|スキル)?|応募要件|応募資格|求めるスキル|歓迎(?:要件|スキル)?|尚可|尚良|ng条件)\s*(?:[:：])?\s*$/i;
+  const out = lines.filter((ln) => !badHead.test(ln.trim())).join("\n").trim();
+  return out.length ? out : undefined;
+}
+
 function canonLang(name: string) {
   if (!name) return '';
   const k = name
@@ -301,6 +333,10 @@ function extractFromJapanesePosting(raw?: string) {
   if (!raw) return {};
   const t = toHalfWidth2(raw);
   const out: Record<string, unknown> = {};
+
+  // --- extract title (案件名) ---
+  const titleMatch = raw?.match(/案件名[：:\-]\s*([^\n]+)/);
+  if (titleMatch) out.title = clean2(titleMatch[1]);
 
   // --- simple sections ---
   const pick = (re: RegExp, idx = 1) => {
@@ -402,12 +438,6 @@ function extractFromJapanesePosting(raw?: string) {
       if (niceTxt) (out as any).niceSkillsText = niceTxt.split("\n").map((ln) => ln.replace(/^[・•◆●\-\s]+/, "")).join("\n");
     }
 
-    // 開発環境（environmentText） fallback: capture block between 開発環境 and next heading
-    if (!(out as any).environmentText) {
-      const mEnv = tNL.match(/(?:^|\n)\s*(?:開発環境|使用技術|技術スタック|利用技術|使用ツール|環境|Tech\s*Stack)\s*(?:[:：]|\n)\s*([\s\S]*?)(?=\n\s*[【\[]?\s*(?:必須|歓迎|尚可|尚良|NG条件|募集背景|業務内容|案件詳細|勤務地|勤務時間|商流|精算|支払いサイト)\s*[】\]]?\s*(?:[:：]|\n)|\n*$)/i);
-      const envTxt = normalizeLinesKeepBreaks(mEnv?.[1] || "");
-      if (envTxt) (out as any).environmentText = envTxt;
-    }
   } catch { /* noop fallback errors */ }
   // payment range fallback from labeled line: 【精算幅】：140h-180h / 140-180h
   {
@@ -439,25 +469,10 @@ function extractFromJapanesePosting(raw?: string) {
   const pc = extractPCProvision(t);
   if (pc) (out as any).pcProvision = pc;
 
-  // --- 開発環境（environmentText） ---
-  {
-    // 見出しの同義語を広くカバー
-    const heading = String.raw`(?:開発環境|使用技術|技術スタック|利用技術|使用ツール|環境|Tech\\s*Stack)`;
-    const next = String.raw`(?:必須(?:条件|スキル)?|応募要件|応募資格|求めるスキル|歓迎(?:スキル)?|尚可|尚良|NG条件|募集背景|業務内容(?:（詳細）?)?|案件詳細|使用言語|開発言語|開発体制|勤務地|勤務時間|商流|精算(?:幅)?|支払いサイト)`;
-    const envHeadingToNextRe = new RegExp(
-      String.raw`^\\s*(?:[【\$begin:math:display$]?\\\\s*)?${heading}(?:\\\\s*[】\\$end:math:display$]\\s*)?\\s*(?:[:：])?\\s*[\\r\\n]+([\\s\\S]*?)(?=^\\s*(?:[【\$begin:math:display$]?\\\\s*${next}\\\\s*[】\\$end:math:display$]?\\s*(?:[:：])?\\s*$)|\\Z)`,
-      "im"
-    );
-    const m = t.match(envHeadingToNextRe);
-    if (m) {
-      const filtered = (normalizeLinesKeepBreaks(m[1]) || "")
-        .split("\n")
-        // 見出し語だけの行は弾く
-        .filter((ln) => !/^(?:[-・●◆]?\\s*)?(?:必須(?:条件|スキル)?|応募要件|応募資格|求めるスキル|歓迎(?:スキル)?|尚可|尚良)\\s*(?:[:：])?\\s*$/.test(ln))
-        .join("\n")
-        .trim();
-      if (filtered) (out as any).environmentText = filtered;
-    }
+
+  // attendanceFrequency -> workStyle if remote
+  if (!out.workStyle && typeof out.attendanceFrequency === 'string' && /フルリモート|完全在宅/i.test(String(out.attendanceFrequency))) {
+    out.workStyle = 'remote';
   }
 
   // --- languages and skills ---
@@ -526,6 +541,34 @@ function extractFromJapanesePosting(raw?: string) {
     if (txt) (out as any).niceSkillsText = txt
         .split("\n").map((ln) => ln.replace(/^[・•◆●\-\s]+/, "")).filter((ln)=>ln.length>0).join("\n");
     }
+
+  // --- ④ 原文テキストから skills 配列を派生（重複統合） ---
+  // テキストが存在すれば explodeLangList で技術語だけを抽出して配列に統合する
+  {
+    const curMust = Array.isArray((out as any).mustSkills) ? (out as any).mustSkills as string[] : [];
+    const curNice = Array.isArray((out as any).niceSkills) ? (out as any).niceSkills as string[] : [];
+
+    const fromMustText = explodeLangList((out as any).mustSkillsText);
+    const fromNiceText = explodeLangList((out as any).niceSkillsText);
+
+    // 既存 mustSkills に fromMustText を統合
+    if (fromMustText.length) {
+      const set = new Set<string>(curMust);
+      for (const s of fromMustText) set.add(s);
+      (out as any).mustSkills = Array.from(set);
+    } else if (curMust.length) {
+      (out as any).mustSkills = curMust;
+    }
+
+    // 既存 niceSkills に fromNiceText を統合
+    if (fromNiceText.length) {
+      const set = new Set<string>(curNice);
+      for (const s of fromNiceText) set.add(s);
+      (out as any).niceSkills = Array.from(set);
+    } else if (curNice.length) {
+      (out as any).niceSkills = curNice;
+    }
+  }
 
   // 言語年数: 全体の「（2年以上）」があれば必須言語に適用
   const yearsGlobal = /（\s*([0-9]+(?:\.[0-9]+)?)\s*年以上?\s*）/.exec(t)?.[1];
@@ -655,49 +698,36 @@ serve(async (req: Request) => {
       }
     };
 
-    // ---- If no API key: heuristic-only path (dev-safe) --------------------
 // ---- If no API key: heuristic-only path (dev-safe) --------------------
 if (!OPENAI_API_KEY) {
-  const heur = extractLanguageYearsHeuristics(rawText);
-  const salary = extractSalaryRangeMan(rawText);
-  const ws = extractWorkStyle(rawText);
-  const loc = extractLocation(rawText);
+  // Heuristic-only merge when running locally or without OPENAI key
+  const base: Record<string, unknown> = isObject(data) ? { ...data } : {};
+  const rt = typeof rawText === "string" ? rawText : "";
 
-  const result: Record<string, unknown> = {
-    ...(data ?? {}),
-    ...(Object.keys(heur).length ? { languageYears: heur } : {}),
-    ...(ws ? { workStyle: ws } : {}),
-    ...(loc ? { location: loc } : {}),
-    ...salary
-  };
+  // Lightweight extractions
+  const langYears = extractLanguageYearsHeuristics(rt);
+  const salary = extractSalaryRangeMan(rt);
+  const ws = extractWorkStyle(rt);
+  const loc = extractLocation(rt);
 
-  // --- 日本語求人ヒューリスティクスで不足を補完 ---
-  const fromJaNoAI = extractFromJapanesePosting(rawText);
-  if (fromJaNoAI && Object.keys(fromJaNoAI).length) {
-    Object.assign(result, mergeMissing(result, fromJaNoAI as Record<string, unknown>));
+  if (ws) base.workStyle = ws;
+  if (loc) base.location = loc;
+  if (Object.keys(langYears).length) {
+    base.languageYears = langYears;
+    (base as any).languageYearsText = Object.entries(langYears)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(", ");
+  }
+  if ((base as any).budgetMin == null && (base as any).budgetMax == null) {
+    Object.assign(base, salary);
   }
 
-  // detailedDescription しか無いときは短い description を作る
-  if (!(result as any).description && (result as any).detailedDescription) {
-    const short = compactDescription(String((result as any).detailedDescription));
-    if (short) (result as any).description = short;
-  }
+  // Use robust section extractor for Japanese postings
+  const extra = extractFromJapanesePosting(rt) as Record<string, unknown>;
+  const merged = mergeMissing(base, extra);
 
-  // ミラー/別名フィールドを整える
-  const rAny: any = result;
-  if (rAny.paymentSiteDays != null && rAny.paymentTerms == null) rAny.paymentTerms = String(rAny.paymentSiteDays);
-  if (rAny.attendanceFrequency == null && rAny.attendance != null) rAny.attendanceFrequency = rAny.attendance;
-  if (rAny.attendance == null && rAny.attendanceFrequency != null) rAny.attendance = rAny.attendanceFrequency;
-  if (rAny.settlementRange != null && rAny.paymentRange == null) rAny.paymentRange = rAny.settlementRange;
-  if (rAny.pcProvision != null && rAny.pcProvided == null) rAny.pcProvided = rAny.pcProvision;
-  if (rAny.ngConditions == null && rAny.ngConditionsText != null) rAny.ngConditions = rAny.ngConditionsText;
-  if (rAny.languageYears && !rAny.languageYearsText && typeof rAny.languageYears === 'object') {
-    rAny.languageYearsText = Object.entries(rAny.languageYears as Record<string,string>)
-      .map(([k,v]) => `${k} ${v}`).join(", ");
-  }
-
-  return new Response(JSON.stringify(result), {
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+  return new Response(JSON.stringify(merged), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
@@ -759,5 +789,140 @@ if (!OPENAI_API_KEY) {
     const mAny = parsed as any;
     if (mAny.mustSkillsText && !mAny.mustSkillsRaw) mAny.mustSkillsRaw = mAny.mustSkillsText;
     if (mAny.niceSkillsText && !mAny.niceSkillsRaw) mAny.niceSkillsRaw = mAny.niceSkillsText;
-    if (mAny.ngConditions && !mAny.ngConditionsText) mAny.ngConditionsText = mAny.ngConditions;
     if (mAny.ngConditionsText && !mAny.ngConditions) mAny.ngConditions = mAny.ngConditionsText;
+
+    // Ensure title is filled if missing
+    if (!mAny.title) {
+      const raw = typeof rawText === "string" ? toHalfWidth2(rawText) : "";
+      const m = raw.match(/案件名[：:\-]\s*([^\n]+)/);
+      if (m) mAny.title = clean2(m[1]);
+    }
+
+    // languageYearsText helper
+    if (mAny.languageYears && !mAny.languageYearsText) {
+      try {
+        const entries = Object.entries(mAny.languageYears as Record<string, string>);
+        if (entries.length) {
+          mAny.languageYearsText = entries.map(([k, v]) => `${k} ${v}`).join(", ");
+        }
+      } catch { /* noop */ }
+    }
+
+    // Ensure short description exists
+    if (mAny.detailedDescription && !mAny.description) {
+      const short = compactDescription(String(mAny.detailedDescription));
+      if (short) mAny.description = short;
+    }
+
+    // --- Robust post-fix extractions to improve recall on common fields ---
+    try {
+      const raw = typeof rawText === "string" ? toHalfWidth2(rawText) : "";
+
+      // 面談回数（例: 【面談】 ：1回 / 面談:1回）
+      if (mAny.interviewCount == null) {
+        const m = raw.match(/面談[^\n]*?[：:\-]?\s*(\d+)\s*回/i);
+        if (m) mAny.interviewCount = Number(m[1]);
+      }
+
+      // 精算幅（例: 【精算幅】：140h-180h / 140〜180h）
+      if (!mAny.paymentRange) {
+        const ctx = raw.split(/\n/).filter(l => /精算/.test(l)).join(" ");
+        const s = ctx || raw;
+        const mh = /:/.test(s) ? null : s.match(/(\d{2,3})\s*h?\s*[~〜\-]\s*(\d{2,3})\s*h?/i);
+        if (mh) mAny.paymentRange = `${mh[1]}h〜${mh[2]}h`;
+      }
+
+      // 支払いサイト（日数） -> paymentTerms は文字列で保持、数値は paymentSiteDays へ
+      if (!mAny.paymentTerms || String(mAny.paymentTerms).trim() === "") {
+        const m = raw.match(/支払いサイト[^\n]*?[：:\-]?\s*(\d{1,3})\s*日/);
+        if (m) mAny.paymentTerms = m[1];
+      }
+      if (mAny.paymentSiteDays == null && mAny.paymentTerms) {
+        const m = String(mAny.paymentTerms).match(/(\d{1,3})/);
+        if (m) mAny.paymentSiteDays = Number(m[1]);
+      }
+
+      // 商流 / 商流制限
+      if (!mAny.commerceTier) {
+        const m = raw.match(/商流[^\n]*?[：:\-]\s*([^\n]+)/i);
+        if (m) mAny.commerceTier = clean2(m[1]);
+      }
+      if (!mAny.commerceLimit) {
+        const m = raw.match(/商流制限[^\n]*?[：:\-]\s*([^\n]+)/i);
+        if (m) mAny.commerceLimit = clean2(m[1]);
+      }
+
+      // 年齢制限（例: 【年齢】：45歳まで）
+      if (mAny.ageLimit == null) {
+        const m = raw.match(/年齢[^\n]*?[：:\-]?\s*(\d{2})\s*歳?まで/);
+        if (m) mAny.ageLimit = Number(m[1]);
+      }
+
+      // 外国籍可否（OK/可/NG/不可/×）
+      if (mAny.foreignerAcceptable == null) {
+        if (/外国籍[^\n]*?[：:\-]?\s*(?:NG|不可|×)/i.test(raw)) mAny.foreignerAcceptable = false;
+        else if (/外国籍[^\n]*?[：:\-]?\s*(?:OK|可|〇|○)/i.test(raw)) mAny.foreignerAcceptable = true;
+      }
+
+      // 出社頻度（例: 【出社頻度】：フルリモート）
+      if (!mAny.attendanceFrequency) {
+        const m = raw.match(/出社頻度[^\n]*?[：:\-]\s*([^\n]+)/);
+        if (m) mAny.attendanceFrequency = clean2(m[1]);
+      }
+
+
+      // 必須/歓迎テキストの原文（改行保持・先頭記号除去）
+      const strip = (s?: string) => (s ? (normalizeLinesKeepBreaks(s) || "")
+        .split("\n").map(ln => ln.replace(/^\s*[・•◆●\-]\s*/, "").trim())
+        .filter(Boolean).join("\n").trim() : undefined);
+
+      if (!mAny.mustSkillsText) {
+        const m = raw.match(/(?:^|\n)\s*(?:必須(?:条件|要件|スキル)?|応募要件|応募資格|求めるスキル)\s*(?:[:：]|\n)\s*([\s\S]*?)(?=\n\s*(?:歓迎|尚可|尚良|NG条件|募集背景|開発環境|使用技術)\s*(?:[:：]|\n)|\n*$)/i);
+        const v = strip(m?.[1]);
+        if (v) mAny.mustSkillsText = v;
+      }
+      if (!mAny.niceSkillsText) {
+        const m = raw.match(/(?:^|\n)\s*(?:歓迎(?:要件|スキル)?|尚可|尚良)\s*(?:[:：]|\n)\s*([\s\S]*?)(?=\n\s*(?:必須|応募要件|応募資格|求めるスキル|NG条件|募集背景|開発環境|使用技術)\s*(?:[:：]|\n)|\n*$)/i);
+        const v = strip(m?.[1]);
+        if (v) mAny.niceSkillsText = v;
+      }
+
+      // NG条件
+      if (!mAny.ngConditions) {
+        const m = raw.match(/(?:^|\n)\s*NG条件\s*(?:[:：]|\n)\s*([\s\S]*?)(?=\n\s*(?:必須|歓迎|尚可|尚良|募集背景|開発環境|使用技術)\s*(?:[:：]|\n)|\n*$)/i);
+        const v = strip(m?.[1]);
+        if (v) mAny.ngConditions = v;
+      }
+
+      // 詳細・要約（業務内容）
+      if (!mAny.detailedDescription) {
+        const m = raw.match(/(?:^|\n)\s*(?:業務内容|仕事内容|職務内容|案件詳細)\s*(?:[:：]|\n)\s*([\s\S]*?)(?=\n\s*(?:募集背景|開発環境|使用技術|必須|歓迎|尚可|尚良|NG条件)\s*(?:[:：]|\n)|\n*$)/i);
+        const det = normalizeLinesKeepBreaks(m?.[1] || "");
+        if (det) {
+          mAny.detailedDescription = det;
+          if (!mAny.description) {
+            const short = compactDescription(det);
+            if (short) mAny.description = short;
+          }
+        }
+      }
+
+      // PC貸与（確認中/貸与あり/なし）
+      if (!mAny.pcProvision) {
+        const m = raw.match(/PC[\s　]*貸与[^\n]*?[：:\-]?\s*([^\n]+)/i);
+        if (m) mAny.pcProvision = clean2(m[1]);
+      }
+    } catch { /* no-op */ }
+
+    // Final response
+    return new Response(JSON.stringify(parsed), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    console.error(err);
+    return new Response(JSON.stringify({ error: String((err as any)?.message || err) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+});
